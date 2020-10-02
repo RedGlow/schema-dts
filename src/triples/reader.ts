@@ -1,3 +1,5 @@
+import { Readable } from "stream";
+import * as N3 from "n3";
 /**
  * Copyright 2020 Google LLC
  *
@@ -66,12 +68,42 @@ export function toTripleStrings(data: string[]) {
   }, [] as string[][]);
 }
 
+export function toTripleStrings2(data: string[]) {
+  const toUrl = (input: N3.NamedNode | N3.Literal | N3.BlankNode | N3.Variable, useAngular = false): string => {
+    const wrapAngular = (x: string) => useAngular ? `<${x}>` : x;
+    switch(input.termType) {
+      case "NamedNode":
+        return wrapAngular(input.value);
+      case "Literal":
+        return `"${input.value
+          .replace(/"/g, "\\u0022")
+          .replace(/\n/g, "\\n")
+          .replace(/\r/g, "\\r")
+          .replace(/\\/g, "\\\\")}"` + (
+            input.language ? `@${input.language}` : ""
+          )
+      case "BlankNode":
+        return wrapAngular(`https://foxthesystem.space/blank_nodes/#${input.value}`);
+      default:
+        throw new Error(`Don't know how to handle ${input.termType}: ${input.value}`);
+    }
+  };
+  const quads = new N3.Parser().parse(data.join(""));
+  return quads.map(quad => [toUrl(quad.subject), toUrl(quad.predicate), toUrl(quad.object, true)])
+}
+
 /**
  * Loads schema all Triples from a given Schema file and version.
  */
 export function load(url: string): Observable<Triple> {
   return new Observable<Triple>(subscriber => {
     handleUrl(url, subscriber);
+  });
+}
+
+export function loadFromStream(stream: Readable): Observable<Triple> {
+  return new Observable<Triple>(subscriber => {
+    handleDataFromUrl(stream, subscriber);
   });
 }
 
@@ -95,33 +127,37 @@ function handleUrl(url: string, subscriber: Subscriber<Triple>): TeardownLogic {
         return;
       }
 
-      const data: string[] = [];
-
-      response.on('data', (chunkB: Buffer) => {
-        const chunk = chunkB.toString('utf-8');
-        data.push(chunk);
-      });
-
-      response.on('end', () => {
-        try {
-          const triples = toTripleStrings(data);
-          for (const triple of process(triples)) {
-            subscriber.next(triple);
-          }
-        } catch (error) {
-          Log(`Caught Error on end: ${error}`);
-          subscriber.error(error);
-        }
-
-        subscriber.complete();
-      });
-
-      response.on('error', error => {
-        Log(`Saw error: ${error}`);
-        subscriber.error(error);
-      });
+      handleDataFromUrl(response, subscriber);
     })
     .on('error', e => subscriber.error(e));
+}
+
+function handleDataFromUrl(stream: Readable, subscriber: Subscriber<Triple>) {
+  const data: string[] = [];
+
+  stream.on('data', (chunkB: Buffer) => {
+    const chunk = chunkB.toString('utf-8');
+    data.push(chunk);
+  });
+
+  stream.on('end', () => {
+    try {
+      const triples = toTripleStrings2(data);
+      for (const triple of process(triples)) {
+        subscriber.next(triple);
+      }
+    } catch (error) {
+      Log(`Caught Error on end: ${error}`);
+      subscriber.error(error);
+    }
+
+    subscriber.complete();
+  });
+
+  stream.on('error', error => {
+    Log(`Saw error: ${error}`);
+    subscriber.error(error);
+  });
 }
 
 export function* process(triples: string[][]): Iterable<Triple> {
